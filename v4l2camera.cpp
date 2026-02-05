@@ -10,6 +10,7 @@
 #include <cstring>
 #include <errno.h>
 #include <QDebug>
+#include <QMutexLocker>
 
 // helper ioctl loop
 static int xioctl(int fd, unsigned long request, void *arg)
@@ -37,6 +38,38 @@ void V4L2Camera::stopCapture()
     m_running = false;
 }
 
+void V4L2Camera::requestInputSwitch()
+{
+    if (!m_running) {
+        emit errorOccurred("Camera not running: cannot switch input");
+        return;
+    }
+    int prev = m_requested_input.exchange(-2);
+    if (prev != -1) {
+        // already a pending request, ignore duplicate
+        return;
+    }
+    qDebug() << "Input toggle requested";
+}
+
+void V4L2Camera::requestInputSwitchTo(int idx)
+{
+    if (!m_running) {
+        emit errorOccurred("Camera not running: cannot switch input");
+        return;
+    }
+    if (idx < 0) {
+        emit errorOccurred("Invalid input index requested");
+        return;
+    }
+    int prev = m_requested_input.exchange(idx);
+    if (prev != -1) {
+        // already a pending request, ignore duplicate
+        return;
+    }
+    qDebug() << "Input switch to requested:" << idx;
+}
+
 void V4L2Camera::run()
 {
     if (!openDevice()) {
@@ -61,8 +94,21 @@ void V4L2Camera::run()
         return;
     }
 
+    // try to read current input if supported
+    int curInput = -1;
+    if (xioctl(m_fd, VIDIOC_G_INPUT, &curInput) == 0) {
+        m_current_input.store(curInput);
+    }
+
     m_running = true;
     while (m_running) {
+        // handle pending input change inside camera thread
+        if (m_requested_input.load() != -1) {
+            handlePendingInputChange();
+            // continue loop to pick up new streaming state (and not immediately call select on old fd)
+            continue;
+        }
+
         fd_set fds;
         FD_ZERO(&fds);
         FD_SET(m_fd, &fds);
@@ -89,6 +135,8 @@ void V4L2Camera::run()
     uninitMmap();
     closeDevice();
 }
+
+// --- device/open/close/query ---
 
 bool V4L2Camera::openDevice()
 {
@@ -130,6 +178,8 @@ bool V4L2Camera::queryCaps()
     }
     return true;
 }
+
+// --- format selection (unchanged, keep preferred formats) ---
 
 bool V4L2Camera::trySetFormatSingle(uint32_t pixfmt)
 {
@@ -176,7 +226,6 @@ bool V4L2Camera::trySetFormatMPlane(uint32_t pixfmt)
 
 bool V4L2Camera::initFormat()
 {
-    // try common formats (NV12, NV21, UYVY, YUYV)
     const uint32_t preferred[] = {
         V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_NV21, V4L2_PIX_FMT_UYVY, V4L2_PIX_FMT_YUYV
     };
@@ -185,7 +234,6 @@ bool V4L2Camera::initFormat()
         for (uint32_t f : preferred) {
             if (trySetFormatMPlane(f)) return true;
         }
-        // fallback: get current format
         v4l2_format fmt;
         memset(&fmt,0,sizeof(fmt));
         fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
@@ -204,7 +252,6 @@ bool V4L2Camera::initFormat()
         for (uint32_t f : preferred) {
             if (trySetFormatSingle(f)) return true;
         }
-        // fallback: get current single-planar format
         v4l2_format fmt;
         memset(&fmt,0,sizeof(fmt));
         fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -220,6 +267,8 @@ bool V4L2Camera::initFormat()
         return true;
     }
 }
+
+// --- mmap init/uninit (same as your original) ---
 
 bool V4L2Camera::initMmap()
 {
@@ -243,14 +292,12 @@ bool V4L2Camera::initMmap()
 
     for (uint32_t i = 0; i < (uint32_t)req.count; ++i) {
         if (m_is_mplane) {
-            // multi-planar: query buffer with plane info
             v4l2_buffer buf;
             memset(&buf, 0, sizeof(buf));
             buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
             buf.memory = V4L2_MEMORY_MMAP;
             buf.index = i;
 
-            // prepare planes array to receive info
             v4l2_plane planes[VIDEO_MAX_PLANES];
             memset(planes, 0, sizeof(planes));
             buf.m.planes = planes;
@@ -261,7 +308,6 @@ bool V4L2Camera::initMmap()
                 return false;
             }
 
-            // number of planes filled by driver is in buf.length OR m_num_planes; use min
             int planes_count = buf.length;
             if (planes_count <= 0) planes_count = m_num_planes;
             if (planes_count > VIDEO_MAX_PLANES) planes_count = VIDEO_MAX_PLANES;
@@ -275,7 +321,6 @@ bool V4L2Camera::initMmap()
                 void *start = mmap(nullptr, len, PROT_READ | PROT_WRITE, MAP_SHARED, m_fd, off);
                 if (start == MAP_FAILED) {
                     emit errorOccurred(QString("mmap plane %1 failed: %2").arg(p).arg(strerror(errno)));
-                    // unmap previously mapped planes for this buffer
                     for (int q = 0; q < p; ++q) {
                         if (m_buffers[i].starts[q]) munmap(m_buffers[i].starts[q], m_buffers[i].lengths[q]);
                         m_buffers[i].starts[q] = nullptr;
@@ -287,7 +332,6 @@ bool V4L2Camera::initMmap()
                 m_buffers[i].lengths[p] = len;
             }
         } else {
-            // single-planar
             v4l2_buffer buf;
             memset(&buf, 0, sizeof(buf));
             buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -310,7 +354,6 @@ bool V4L2Camera::initMmap()
         }
     }
 
-    // queue buffers
     for (uint32_t i = 0; i < (uint32_t)m_buffers.size(); ++i) {
         if (m_is_mplane) {
             v4l2_buffer buf;
@@ -319,7 +362,6 @@ bool V4L2Camera::initMmap()
             buf.memory = V4L2_MEMORY_MMAP;
             buf.index = i;
 
-            // prepare empty planes array; driver doesn't require mem_offset here for mmap requeue
             v4l2_plane planes[VIDEO_MAX_PLANES];
             memset(planes,0,sizeof(planes));
             buf.m.planes = planes;
@@ -375,7 +417,8 @@ void V4L2Camera::stopStreaming()
     xioctl(m_fd, VIDIOC_STREAMOFF, &type);
 }
 
-// small helpers for conversion
+// --- YUV->RGB helpers and readOneFrame  ---
+
 static inline uchar clamp255(int v) {
     if (v < 0) return 0;
     if (v > 255) return 255;
@@ -416,7 +459,6 @@ bool V4L2Camera::readOneFrame()
         int planes_count = buf.length;
         if (planes_count <= 0) planes_count = m_num_planes;
         if ((size_t)idx >= m_buffers.size()) {
-            // defensive
             if (xioctl(m_fd, VIDIOC_QBUF, &buf) == -1) {
                 emit errorOccurred(QString("VIDIOC_QBUF (requeue invalid idx) failed: %1").arg(strerror(errno)));
             }
@@ -425,7 +467,6 @@ bool V4L2Camera::readOneFrame()
 
         QImage out(m_width, m_height, QImage::Format_RGB888);
 
-        // handle NV12 / NV21 common mplane layout: plane0 = Y, plane1 = interleaved UV
         const unsigned char *yPlane = nullptr;
         const unsigned char *uvPlane = nullptr;
         if (m_buffers[idx].starts.size() > 0) yPlane = static_cast<const unsigned char*>(m_buffers[idx].starts[0]);
@@ -450,7 +491,6 @@ bool V4L2Camera::readOneFrame()
                 }
             }
         } else {
-            // fallback -> grayscale from first plane
             if (!yPlane && m_buffers[idx].starts.size() > 0) {
                 yPlane = static_cast<const unsigned char*>(m_buffers[idx].starts[0]);
             }
@@ -470,7 +510,6 @@ bool V4L2Camera::readOneFrame()
 
         emit frameReady(out);
 
-        // requeue
         buf.m.planes = planes;
         buf.length = planes_count;
         if (xioctl(m_fd, VIDIOC_QBUF, &buf) == -1) {
@@ -479,7 +518,6 @@ bool V4L2Camera::readOneFrame()
         }
         return true;
     } else {
-        // single-planar path
         v4l2_buffer buf;
         memset(&buf,0,sizeof(buf));
         buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -500,7 +538,6 @@ bool V4L2Camera::readOneFrame()
         }
 
         const unsigned char *data = static_cast<const unsigned char*>(m_buffers[idx].starts[0]);
-
         QImage out(m_width, m_height, QImage::Format_RGB888);
 
         if (m_pixfmt == V4L2_PIX_FMT_NV12 || m_pixfmt == V4L2_PIX_FMT_NV21) {
@@ -548,7 +585,6 @@ bool V4L2Camera::readOneFrame()
                 }
             }
         } else {
-            // fallback grayscale
             const unsigned char *yPlane = data;
             for (int row = 0; row < m_height; ++row) {
                 uchar *dst = out.scanLine(row);
@@ -569,4 +605,105 @@ bool V4L2Camera::readOneFrame()
         }
         return true;
     }
+}
+
+// --- handlePendingInputChange implementation ---
+void V4L2Camera::handlePendingInputChange()
+{
+    QMutexLocker locker(&m_reconf_mutex);
+
+    int req = m_requested_input.exchange(-1);
+    if (req == -1) return;
+
+    int newIdx = req;
+    if (req == -2) {
+        int cur = -1;
+        if (xioctl(m_fd, VIDIOC_G_INPUT, &cur) == -1) {
+            emit errorOccurred(QString("VIDIOC_G_INPUT failed: %1").arg(strerror(errno)));
+            // попробовать восстановить текущий стрим
+            if (!initFormat() || !initMmap() || !startStreaming()) {
+                emit errorOccurred("Failed to restart stream after VIDIOC_G_INPUT failure");
+                m_running = false;
+            }
+            return;
+        }
+        newIdx = (cur == 0) ? 1 : 0;
+    }
+
+    qDebug() << "Applying input switch to" << newIdx;
+
+    // stop streaming и unmap
+    stopStreaming();
+    uninitMmap();
+
+    // Попытки VIDIOC_S_INPUT с backoff
+    const int MAX_SINPUT_ATTEMPTS = 6;
+    bool sinput_ok = false;
+    for (int attempt = 0; attempt < MAX_SINPUT_ATTEMPTS; ++attempt) {
+        if (xioctl(m_fd, VIDIOC_S_INPUT, &newIdx) == 0) {
+            sinput_ok = true;
+            qDebug() << "VIDIOC_S_INPUT success on attempt" << attempt;
+            break;
+        }
+        int err = errno;
+        qWarning() << "VIDIOC_S_INPUT attempt" << attempt << "failed:" << strerror(err);
+
+        // если timeout/ETIMEDOUT или EIO, даём время и пробуем снова
+        // пауза: 50ms, 100ms, 200ms, 350ms,...
+        int sleep_ms = 50 + attempt * 50;
+        msleep(sleep_ms);
+
+        // на некоторой итерации пробуем reopen (fallback)
+        if (attempt == 2) {
+            qWarning() << "VIDIOC_S_INPUT: fallback -> reopen device";
+            closeDevice();
+            msleep(80);
+            if (!openDevice()) {
+                emit errorOccurred(QString("Failed to reopen device for input switch: %1").arg(strerror(errno)));
+                m_running = false;
+                return;
+            }
+            if (!queryCaps()) {
+                emit errorOccurred("queryCaps failed after reopen");
+                m_running = false;
+                return;
+            }
+        }
+    }
+
+    if (!sinput_ok) {
+        emit errorOccurred("VIDIOC_S_INPUT failed after retries");
+        // попытка вернуть stream в рабочее состояние
+        if (!initFormat() || !initMmap() || !startStreaming()) {
+            emit errorOccurred("Failed to restart stream after S_INPUT failure");
+            m_running = false;
+        }
+        return;
+    }
+
+    // даём HW немного времени, чтобы линки/PHY/I2 завершились
+    msleep(800); // можно увеличить
+
+    // Реинициализация формат/mmap/streamon с retry
+    const int MAX_REINIT_ATTEMPTS = 4;
+    bool reinit_ok = false;
+    for (int r = 0; r < MAX_REINIT_ATTEMPTS; ++r) {
+        if (initFormat() && initMmap() && startStreaming()) {
+            reinit_ok = true;
+            qDebug() << "Reinit success on attempt" << r;
+            break;
+        }
+        qWarning() << "Reinit attempt" << r << "failed, errno:" << strerror(errno);
+        msleep(150 + r * 150); // 150,300,450,...
+    }
+
+    if (!reinit_ok) {
+        emit errorOccurred("Failed to restart stream after input switch (reinit failed)");
+        m_running = false;
+        return;
+    }
+
+    m_current_input.store(newIdx);
+    emit inputChanged(newIdx);
+    qDebug() << "Input switch to" << newIdx << "applied successfully";
 }
