@@ -6,9 +6,14 @@ import QtQuick.Layouts 1.12
 Window {
     id: root
     visible: true
-    width: 1280
-    height: 720
+    width: Screen.width
+    height: Screen.height
     title: "Camera Preview"
+
+    // Убираем рамку окна и делаем полноэкранным
+    flags: Qt.FramelessWindowHint | Qt.Window
+    visibility: Window.FullScreen
+    color: "black"
 
     // состояние поворота для видео (0, 90, 180, 270)
     property int camRotation: 0
@@ -33,7 +38,7 @@ Window {
         }
 
         Text {
-            text: "Press the M button to open the menu"
+            // text: "Press the M button to open the menu"
             color: "white"
             anchors.left: parent.left
             anchors.leftMargin: 8
