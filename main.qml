@@ -2,7 +2,6 @@ import QtQuick 2.12
 import QtQuick.Window 2.12
 import QtQuick.Controls 2.12
 import QtQuick.Layouts 1.12
-import Qt.labs.platform 1.1
 
 Window {
     id: root
@@ -13,9 +12,6 @@ Window {
 
     // состояние поворота для видео (0, 90, 180, 270)
     property int camRotation: 0
-
-    // яркость дисплея в процентах (0–100)
-    property int displayBrightnessPercent: 50
 
     signal menuAction(string action, string value)
 
@@ -74,9 +70,7 @@ Window {
 
                 Text {
                     id: header
-                    text: menuRoot.menuStack.length === 0
-                          ? "Owlet2.0 menu"
-                          : menuRoot.menuStack[menuRoot.menuStack.length - 1].display
+                    text: menuRoot.menuStack.length === 0 ? "Owlet2.0 menu" : menuRoot.menuStack[menuRoot.menuStack.length - 1].display
                     font.pixelSize: 28
                     color: "white"
                     horizontalAlignment: Text.AlignHCenter
@@ -85,10 +79,8 @@ Window {
 
                 Rectangle { height: 1; color: "#ffffff22"; Layout.fillWidth: true }
 
-                // === LIST MENU ===
                 ListView {
                     id: list
-                    visible: !brightnessPanel.visible
                     focus: false
                     model: menuRoot.menuModel
                     currentIndex: menuRoot.currentIndex
@@ -122,6 +114,7 @@ Window {
                     }
 
                     Keys.onPressed: {
+                        // handle navigation when list has focus
                         if (event.key === Qt.Key_Up) {
                             if (menuRoot.currentIndex > 0) menuRoot.currentIndex--;
                             event.accepted = true;
@@ -141,72 +134,6 @@ Window {
                     }
                 }
 
-                // === BRIGHTNESS PANEL ===
-                Item {
-                    id: brightnessPanel
-                    visible: false
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    focus: true
-
-                    ColumnLayout {
-                        anchors.centerIn: parent
-                        spacing: 24
-
-                        Text {
-                            text: "Яркость дисплея"
-                            color: "white"
-                            font.pixelSize: 24
-                            Layout.alignment: Qt.AlignHCenter
-                        }
-
-                        Text {
-                            text: root.displayBrightnessPercent + " %"
-                            color: "white"
-                            font.pixelSize: 20
-                            Layout.alignment: Qt.AlignHCenter
-                        }
-
-                        Rectangle {
-                            width: parent.width * 0.8
-                            height: 16
-                            radius: 8
-                            color: "#444444"
-
-                            Rectangle {
-                                height: parent.height
-                                width: parent.width * root.displayBrightnessPercent / 100
-                                radius: 8
-                                color: "#ffffff"
-                            }
-                        }
-
-                        Text {
-                            text: "← / → или ↑ / ↓ — изменить, Esc — назад"
-                            color: "#cccccc"
-                            font.pixelSize: 14
-                            Layout.alignment: Qt.AlignHCenter
-                        }
-                    }
-
-                    Keys.onPressed: {
-                        if (event.key === Qt.Key_Left || event.key === Qt.Key_Down) {
-                            root.displayBrightnessPercent = Math.max(0, root.displayBrightnessPercent - 1);
-                            backlightProcess.writeBrightness(root.displayBrightnessPercent);
-                            event.accepted = true;
-                        } else if (event.key === Qt.Key_Right || event.key === Qt.Key_Up) {
-                            root.displayBrightnessPercent = Math.min(100, root.displayBrightnessPercent + 1);
-                            backlightProcess.writeBrightness(root.displayBrightnessPercent);
-                            event.accepted = true;
-                        } else if (event.key === Qt.Key_Escape) {
-                            brightnessPanel.visible = false;
-                            list.visible = true;
-                            list.forceActiveFocus();
-                            event.accepted = true;
-                        }
-                    }
-                }
-
                 RowLayout {
                     Layout.alignment: Qt.AlignRight
                     spacing: 12
@@ -220,6 +147,7 @@ Window {
             }
 
             Keys.onPressed: {
+                // allow navigation even if list didn't get focus
                 if (event.key === Qt.Key_Up) {
                     if (menuRoot.currentIndex > 0) menuRoot.currentIndex--;
                     event.accepted = true;
@@ -252,36 +180,17 @@ Window {
                         {display: "Контраст", id: "contrast"},
                         {display: "Палитра", id: "palette"},
                         {display: "Траектория", id: "trajectory"},
-                        {display: "Кадр", id: "frame"},
-                        {display: "Яркость дисплея", id: "display_brightness"}
+                        {display: "Кадр", id: "frame"}
                     ];
                 } else if (name === "contrast") {
-                    arr = [
-                        {display: "Позитив", id: "positive"},
-                        {display: "Негатив", id: "negative"}
-                    ];
+                    arr = [ {display: "Позитив", id: "positive"}, {display: "Негатив", id: "negative"}];
                 } else if (name === "palette") {
-                    arr = [
-                        {display: "Белый горячий", id: "white_hot"},
-                        {display: "Черный горячий", id: "black_hot"},
-                        {display: "Сепия", id: "sepia"},
-                        {display: "Красный горячий", id: "red_hot"},
-                        {display: "Железо", id: "iron"},
-                        {display: "Зеленый холодный", id: "green_cold"}
-                    ];
+                    arr = [ {display: "Белый горячий", id: "white_hot"}, {display: "Черный горячий", id: "black_hot"}, {display: "Сепия", id: "sepia"}, {display: "Красный горячий", id: "red_hot"}, {display: "Железо", id: "iron"}, {display: "Зеленый холодный", id: "green_cold"}];
                 } else if (name === "trajectory") {
-                    arr = [
-                        {display: "Да", id: "traj_yes"},
-                        {display: "Нет", id: "traj_no"}
-                    ];
+                    arr = [ {display: "Да", id: "traj_yes"}, {display: "Нет", id: "traj_no"}];
                 } else if (name === "frame") {
-                    arr = [
-                        {display: "Повернуть 90°", id: "rotate"},
-                        {display: "Гамма-кор", id: "gamma"},
-                        {display: "Контраст", id: "frame_contrast"},
-                        {display: "Шарпенинг", id: "sharpen"},
-                        {display: "Яркость кадра", id: "brightness"}
-                    ];
+                    // Пункт поворота перенесён сюда
+                    arr = [ {display: "Повернуть 90°", id: "rotate"}, {display: "Гамма-кор", id: "gamma"}, {display: "Контраст", id: "frame_contrast"}, {display: "Шарпенинг", id: "sharpen"}, {display: "Яркость кадра", id: "brightness"}];
                 }
                 return arr;
             }
@@ -291,8 +200,7 @@ Window {
                 menuRoot.menuModel = menuRoot.buildModel("main");
                 menuRoot.currentIndex = 0;
                 menuRoot.visible = true;
-                brightnessPanel.visible = false;
-                list.visible = true;
+                // ensure list gets keyboard focus
                 focusTimer.start();
             }
 
@@ -309,15 +217,7 @@ Window {
                 if (!item) return;
 
                 if (menuRoot.menuStack.length === 0) {
-                    // если выбран пункт "Яркость дисплея" — показываем ползунок
-                    if (item.id === "display_brightness") {
-                        brightnessPanel.visible = true;
-                        list.visible = false;
-                        brightnessPanel.forceActiveFocus();
-                        return;
-                    }
-
-                    // иначе — открываем сабменю
+                    // Открываем сабменю
                     menuRoot.menuStack.push({id: item.id, display: item.display});
                     menuRoot.menuModel = menuRoot.buildModel(item.id);
                     menuRoot.currentIndex = 0;
@@ -325,29 +225,22 @@ Window {
                     return;
                 }
 
-                // мы в сабменю
+                // Если мы в сабменю — получим родителя
                 var parent = menuRoot.menuStack[menuRoot.menuStack.length - 1];
 
-                // спец-обработка: поворот в "Кадр" не закрывает меню
+                // Спец-обработка: в сабменю "frame" пункт "rotate" поворачивает и не закрывает меню
                 if (parent.id === "frame" && item.id === "rotate") {
                     root.camRotation = (root.camRotation + 90) % 360;
                     return;
                 }
 
-                // иначе — выполнить действие и закрыть меню
+                // Иначе выполнить действие и закрыть меню
                 menuRoot.menuAction(parent.id, item.display);
                 console.log("menuAction:", parent.id, item.display);
                 menuRoot.closeAll();
             }
 
             function handleEsc() {
-                if (brightnessPanel.visible) {
-                    brightnessPanel.visible = false;
-                    list.visible = true;
-                    list.forceActiveFocus();
-                    return;
-                }
-
                 if (menuRoot.menuStack.length > 0) {
                     menuRoot.menuStack.pop();
                     if (menuRoot.menuStack.length === 0) {
@@ -365,17 +258,17 @@ Window {
 
             function closeAll() {
                 visible = false;
-                brightnessPanel.visible = false;
-                list.visible = true;
                 menuRoot.menuStack = [];
                 menuRoot.menuModel = [];
             }
 
+            // small timer to set focus on list after visible toggled
             Timer {
                 id: focusTimer
                 interval: 0
                 repeat: false
                 onTriggered: {
+                    // try to give focus to ListView; if fails, give focus to menuRoot
                     if (!list.focus) {
                         list.focus = true;
                         list.forceActiveFocus();
@@ -390,16 +283,6 @@ Window {
             }
         }
 
-        // === BACKLIGHT PROCESS ===
-        Process {
-            id: backlightProcess
-
-            function writeBrightness(percent) {
-                var value = Math.round(percent * 255 / 100);
-                start("sh", ["-c", "echo " + value + " > /sys/class/backlight/backlight/brightness"]);
-            }
-        }
-
         Keys.onPressed: {
             if (event.key === Qt.Key_M) {
                 menuRoot.toggle();
@@ -409,5 +292,6 @@ Window {
                 event.accepted = true;
             }
         }
+
     }
 }
