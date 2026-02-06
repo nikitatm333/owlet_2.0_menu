@@ -108,7 +108,6 @@ int main(int argc, char **argv)
 
     int ret = app.exec();
 
-    // cleanup
     cam->stopCapture();
     cam->wait();
     delete cam;

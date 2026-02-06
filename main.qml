@@ -282,7 +282,6 @@ Window {
                 menuRoot.menuModel = menuRoot.buildModel("main");
             }
         }
-
         Keys.onPressed: {
             if (event.key === Qt.Key_M) {
                 menuRoot.toggle();
